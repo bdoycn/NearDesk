@@ -24,7 +24,7 @@
 
 ### 仓库「产品已钉」
 
-Public 仓库，许可证 Apache-2.0。Spike 不引入与 Apache-2.0 不兼容的依赖。本文件不替代仓库根目录的 `LICENSE`；许可证文件由仓库所有者另行放置。
+Public 仓库，许可证 Apache-2.0。Spike 不引入与 Apache-2.0 不兼容的依赖。许可证以仓库根目录的 [LICENSE](../LICENSE) 与 [NOTICE](../NOTICE) 为准；本文档不另行定义许可证。
 
 ### 本周范围「产品已钉」
 
