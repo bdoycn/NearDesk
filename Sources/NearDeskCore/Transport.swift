@@ -367,12 +367,12 @@ final class QuicGroup {
     }
 
     private func extract(_ direction: NWProtocolQUIC.Options.Direction) throws -> MessagePipe {
-        let options = NWProtocolQUIC.Options()
-        options.direction = direction
-        guard let connection = group.extract(connectionTo: nil, using: options) else {
+        // Inherit the group's QUIC parameters. Never pass a fresh NWProtocolQUIC.Options()
+        // into extract — that yields ENETDOWN on UTM/virtio Viewer paths (Pulse).
+        // `using: nil` inherits the stack; treat send-only streams as non-receiving.
+        guard let connection = group.extract(connectionTo: nil, using: nil) else {
             throw TransportError.extract
         }
-        // A locally opened unidirectional stream is send-only.
         let pipe = MessagePipe(connection: connection, queue: queue, receives: direction == .bidirectional)
         pipes[ObjectIdentifier(connection)] = pipe
         return pipe
