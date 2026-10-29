@@ -24,11 +24,25 @@ public enum DisplayCatalog {
     public static var mainID: UInt32 { CGMainDisplayID() }
 
     public static func current() -> [RemoteDisplay] {
+        // Prefer active displays; UTM/VMs often report online-but-inactive (active=0).
+        if let ids = displayIDs(using: CGGetActiveDisplayList), !ids.isEmpty {
+            return ids.map(describe)
+        }
+        if let ids = displayIDs(using: CGGetOnlineDisplayList), !ids.isEmpty {
+            return ids.map(describe)
+        }
+        let main = CGMainDisplayID()
+        return main == 0 ? [] : [describe(main)]
+    }
+
+    private static func displayIDs(
+        using getter: (UInt32, UnsafeMutablePointer<CGDirectDisplayID>?, UnsafeMutablePointer<UInt32>) -> CGError
+    ) -> [CGDirectDisplayID]? {
         var count: UInt32 = 0
-        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        guard getter(0, nil, &count) == .success, count > 0 else { return [] }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
-        return ids.prefix(Int(count)).map(describe)
+        guard getter(count, &ids, &count) == .success else { return nil }
+        return Array(ids.prefix(Int(count)))
     }
 
     public static func describe(_ id: CGDirectDisplayID) -> RemoteDisplay {
