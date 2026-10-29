@@ -1,0 +1,26 @@
+name: Feature request
+description: Idea or enhancement for NearDesk
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What user problem does this unlock?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed direction
+      description: Rough idea is enough. No need for a full design.
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: Out of scope (if any)
+      description: Especially anything that would pull us toward cloud-first remote desktop by default.
+    validations:
+      required: false
