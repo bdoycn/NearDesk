@@ -89,14 +89,13 @@ Host 用 `SCStream` 采集一块显示器。测量配置是 1920×1080、目标 
 
 画面几何或参数集变化时递增 `encoder_config_id`，并先发新的 `VIDEO_CONFIG`，再发引用它的 `VIDEO_FRAME`。
 
-#### M2 下一刀（本周不做）
+#### M2 下一刀（M1 不发送）
 
-M2 才处理「文字要锐、拖窗口又不能靠无损撑带宽」：
+M2 处理「文字要锐、拖窗口又不能靠无损撑带宽」：小脏区走 `lossless_tile`，大面积运动继续 HEVC，按脏区面积分流，而不是在 VideoToolbox 里调色度或 ROI。
 
-- 小脏区、文字、插入符：走无损瓦片通道（独立 `channel_id`，本周保留编号但不发送）。
-- 大面积运动：继续 HEVC。
+组帧、面积阈值、合成顺序和延迟记账写在 [spike-m2-tiles.md](spike-m2-tiles.md)。North 2026-10-29 的验收和范围在那边标成产品已钉；阈值和字节布局仍是 spike 草案。M1 的成功条件仍以上面的产品已钉为准。
 
-两条通道按脏区面积分流，而不是在 VideoToolbox 里调色度或 ROI。本周不建这条通道，帧头里看到保留的 `channel_id` 直接忽略即可。
+在 Host 按那份草案实现之前，不要发送 `channel_id = lossless_tile`。收到则忽略。
 
 ### 3. 输入
 
@@ -221,7 +220,7 @@ Client：
 3. **延迟 HUD 或日志**。至少能算出视频 GG 和输入 feedback；HUD 与 CSV 二选一可跑，CSV 仍是对账格式。
 4. **QUIC stream 组帧说明**。即下一节。Cocoa 按此组帧，不再各自发明头。
 
-不在本周交付：M2 瓦片通道、公网 relay、WebRTC、音频、剪贴板、文件传输、多用户。
+不在本周交付：M2 瓦片通道的实现（组帧草案见 [spike-m2-tiles.md](spike-m2-tiles.md)，M1 不发送）、公网 relay、WebRTC、音频、剪贴板、文件传输、多用户。
 
 ## 组帧草案（Cocoa 按此实现）
 
@@ -269,7 +268,7 @@ offset  size  field
 | --- | --- | --- |
 | `1` | `hevc_main` | 默认 |
 | `2` | `h264_fallback` | HEVC 不可用时 |
-| `3` | `lossless_tile` | 保留给 M2，本周禁止发送 |
+| `3` | `lossless_tile` | M1 禁止发送，收到则忽略。布局见 [spike-m2-tiles.md](spike-m2-tiles.md) |
 
 `encoder_config_id`（`u16`）由 Host 分配，从 1 递增，0 非法。分辨率、codec、`channel_id` 或参数集变化就换新 id。
 
@@ -350,6 +349,8 @@ u8   param_sets[param_set_bytes]
 
 `param_sets` 是 Annex-B：HEVC 为 VPS、SPS、PPS（含起始码）；H.264 为 SPS、PPS。
 
+`channel_id = 3` 的 `codec`、`chroma` 和空参数集不在这里展开，见 [spike-m2-tiles.md](spike-m2-tiles.md)。M1 仍只发通道 1 或 2，并且 `chroma = 1`。
+
 `VIDEO_FRAME` = `0x0102`。
 
 ```text
@@ -384,7 +385,7 @@ i32  height
 
 `width` 与 `height` 大于 0。ScreenCaptureKit 给出的矩形多于 64 个时，Host 收成一个包围盒，置 `DIRTY_COALESCED`，`dirty_rect_count = 1`。
 
-M1 的 `access_unit` 是整帧码流。`rects` 不表示「只编码了这块」。
+M1 的 `access_unit` 是整帧码流。`rects` 不表示「只编码了这块」。`channel_id = 3` 时 `access_unit` 改为紧凑 BGRA，见 [spike-m2-tiles.md](spike-m2-tiles.md)。
 
 ### Input stream
 
