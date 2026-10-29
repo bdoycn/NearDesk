@@ -24,6 +24,7 @@ public final class ViewerSession {
     private var inputPipe: MessagePipe?
     private var controlPipe: MessagePipe?
     private let decoder = VideoDecoder()
+    private let compositor = TileCompositor()
     private var displays: [RemoteDisplay] = []
     private var selected: RemoteDisplay?
     private var codedWidth = 0
@@ -61,6 +62,7 @@ public final class ViewerSession {
         tasks.forEach { $0.cancel() }
         tasks.removeAll()
         decoder.reset()
+        compositor.reset()
     }
 
     public func choose(displayID: UInt32) {
@@ -192,55 +194,79 @@ public final class ViewerSession {
                 pipe.cancel()
                 return
             }
+            decoder.reset()
+            compositor.reset()
             while !stopped {
                 let message = try await pipe.next()
                 let received = MonoClock.nanoseconds()
                 switch message {
                 case .videoConfig(let config):
                     videoTimeout?.cancel()
+                    try compositor.apply(config)
+                    if config.channelID != ChannelID.losslessTile {
+                        try decoder.apply(config)
+                    }
                     codedWidth = Int(config.codedWidth)
                     codedHeight = Int(config.codedHeight)
                     if let match = displays.first(where: { $0.displayID == config.displayID }) {
                         selected = match
                     }
-                    try decoder.apply(config)
                 case .videoFrame(let frame):
                     videoTimeout?.cancel()
-                    guard frame.channelID != ChannelID.losslessTile else { continue }
-                    guard let image = await decoder.decode(frame), let display = selected else { continue }
-                    let presented = PresentedFrame(
-                        pixelBuffer: image,
-                        codedWidth: codedWidth,
-                        codedHeight: codedHeight,
-                        display: display
-                    )
-                    await MainActor.run {
-                        self.onFrame?(presented)
-                        let t4 = MonoClock.nanoseconds()
-                        LatencyHub.shared.noteClientVideo(
-                            frameID: frame.frameID,
-                            channelID: frame.channelID,
-                            encoderConfigID: frame.encoderConfigID,
-                            dirtyCount: frame.rects.count,
-                            auBytes: frame.accessUnit.count,
-                            t0: frame.captureMono,
-                            t3: received,
-                            t4: t4
-                        )
-                        LatencyHub.shared.notePresented(
-                            frameID: frame.frameID,
-                            t0: frame.captureMono,
-                            t4: t4,
-                            qualifies: frame.qualifiesForInputMatch
-                        )
+                    try compositor.validate(frame)
+                    let picture: ComposedFrame?
+                    if frame.channelID == ChannelID.losslessTile {
+                        picture = try compositor.compositeTile(frame)
+                    } else {
+                        guard let image = await decoder.decode(frame) else { continue }
+                        picture = try compositor.compositeLossy(frame, decoded: image)
+                    }
+                    if let picture {
+                        await publish(frame, picture: picture, received: received)
                     }
                 default:
                     pipe.cancel()
                     return
                 }
             }
+        } catch is ProtocolError {
+            pipe.cancel()
+            if !stopped { onStatus?("Video stream reset.") }
         } catch {
+            pipe.cancel()
             if !stopped { onStatus?("Video stream ended.") }
+        }
+    }
+
+    private func publish(_ frame: VideoFrame, picture: ComposedFrame, received: UInt64) async {
+        guard let display = selected else { return }
+        let presented = PresentedFrame(
+            pixelBuffer: picture.pixelBuffer,
+            codedWidth: codedWidth,
+            codedHeight: codedHeight,
+            display: display
+        )
+        let record = picture.recordLatency
+        await MainActor.run {
+            self.onFrame?(presented)
+            guard record else { return }
+            let t4 = MonoClock.nanoseconds()
+            LatencyHub.shared.noteClientVideo(
+                frameID: frame.frameID,
+                channelID: frame.channelID,
+                encoderConfigID: frame.encoderConfigID,
+                dirtyCount: frame.rects.count,
+                auBytes: frame.accessUnit.count,
+                t0: frame.captureMono,
+                t3: received,
+                t4: t4
+            )
+            LatencyHub.shared.notePresented(
+                frameID: frame.frameID,
+                t0: frame.captureMono,
+                t4: t4,
+                qualifies: frame.qualifiesForInputMatch
+            )
         }
     }
 

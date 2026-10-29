@@ -50,6 +50,16 @@ public enum ChannelID {
 public enum CodecID {
     public static let hevc: UInt8 = 1
     public static let h264: UInt8 = 2
+    public static let rawBGRA: UInt8 = 3
+}
+
+/// Draft thresholds from docs/spike-m2-tiles.md. Area is in capture-buffer pixels.
+public enum TileBudget {
+    public static let areaMax: Int64 = 131_072
+    public static let edgeMax: Int32 = 2_048
+    public static let maxCount = 8
+    public static let bytesMax = 524_288
+    public static let lossyKeyframeInterval: UInt64 = 120
 }
 
 public enum FrameFlag {
@@ -416,9 +426,8 @@ enum WireEncoding {
         case .selectDisplay(let select):
             writer.u32(select.displayID)
         case .videoConfig(let config):
-            guard config.encoderConfigID != 0 else { throw ProtocolError.malformed }
-            guard config.chroma == 1 else { throw ProtocolError.malformed }
             guard config.paramSets.count <= Int(UInt16.max) else { throw ProtocolError.malformed }
+            guard WireCheck.config(config) else { throw ProtocolError.malformed }
             writer.u16(config.encoderConfigID)
             writer.u8(config.channelID)
             writer.u8(config.codec)
@@ -432,15 +441,7 @@ enum WireEncoding {
             writer.u16(UInt16(config.paramSets.count))
             writer.bytes(config.paramSets)
         case .videoFrame(let frame):
-            guard frame.encoderConfigID != 0 else { throw ProtocolError.malformed }
-            if frame.frameFlags & FrameFlag.dirtyNone != 0, !frame.rects.isEmpty {
-                throw ProtocolError.malformed
-            }
-            guard frame.rects.count <= 64 else { throw ProtocolError.malformed }
-            guard frame.accessUnit.count <= Int(UInt32.max) else { throw ProtocolError.malformed }
-            for rect in frame.rects where rect.width <= 0 || rect.height <= 0 {
-                throw ProtocolError.malformed
-            }
+            guard WireCheck.frame(frame) else { throw ProtocolError.malformed }
             writer.u64(frame.frameID)
             writer.u16(frame.encoderConfigID)
             writer.u8(frame.channelID)
@@ -550,7 +551,7 @@ enum WireEncoding {
             let paramLen = Int(try cursor.u16())
             var filled = config
             filled.paramSets = try cursor.bytes(paramLen)
-            guard filled.encoderConfigID != 0, filled.chroma == 1 else { throw ProtocolError.malformed }
+            guard WireCheck.config(filled) else { throw ProtocolError.malformed }
             message = .videoConfig(filled)
         case .videoFrame:
             let frameID = try cursor.u64()
@@ -571,7 +572,7 @@ enum WireEncoding {
                 rects.append(rect)
             }
             let au = try cursor.bytes(auLen)
-            message = .videoFrame(VideoFrame(
+            let decodedFrame = VideoFrame(
                 frameID: frameID,
                 encoderConfigID: configID,
                 channelID: channel,
@@ -579,7 +580,9 @@ enum WireEncoding {
                 captureMono: capture,
                 rects: rects,
                 accessUnit: au
-            ))
+            )
+            guard WireCheck.frame(decodedFrame) else { throw ProtocolError.malformed }
+            message = .videoFrame(decodedFrame)
         case .mouseMove:
             let prefix = try readPrefix(&cursor)
             message = .mouseMove(MouseMove(prefix: prefix, xPx: try cursor.f32(), yPx: try cursor.f32()))
@@ -623,6 +626,51 @@ enum WireEncoding {
     private static func readPrefix(_ cursor: inout ByteCursor) throws -> InputPrefix {
         InputPrefix(eventID: try cursor.u64(), eventMono: try cursor.u64(), displayID: try cursor.u32())
     }
+}
+
+enum WireCheck {
+    static func config(_ config: VideoConfig) -> Bool {
+        guard config.encoderConfigID != 0 else { return false }
+        switch config.channelID {
+        case ChannelID.hevcMain:
+            return config.codec == CodecID.hevc && config.chroma == 1
+        case ChannelID.h264Fallback:
+            return config.codec == CodecID.h264 && config.chroma == 1
+        case ChannelID.losslessTile:
+            return config.codec == CodecID.rawBGRA && config.chroma == 0 && config.paramSets.isEmpty
+        default:
+            return false
+        }
+    }
+
+    static func frame(_ frame: VideoFrame) -> Bool {
+        guard frame.encoderConfigID != 0 else { return false }
+        guard frame.accessUnit.count <= Int(UInt32.max) else { return false }
+        if frame.frameFlags & FrameFlag.dirtyNone != 0, !frame.rects.isEmpty { return false }
+        for rect in frame.rects where rect.width <= 0 || rect.height <= 0 { return false }
+        if frame.channelID == ChannelID.losslessTile {
+            if frame.frameFlags & (FrameFlag.keyframe | FrameFlag.dirtyNone) != 0 { return false }
+            guard (1...TileBudget.maxCount).contains(frame.rects.count) else { return false }
+            for rect in frame.rects where rect.x < 0 || rect.y < 0 { return false }
+            guard let bytes = tilePayloadBytes(frame.rects), bytes == frame.accessUnit.count else { return false }
+            return true
+        }
+        return frame.rects.count <= 64
+    }
+}
+
+func tilePayloadBytes(_ rects: [NdRect]) -> Int? {
+    var total: Int64 = 0
+    for rect in rects {
+        if rect.width <= 0 || rect.height <= 0 { return nil }
+        let area = Int64(rect.width) * Int64(rect.height)
+        if area > Int64.max / 4 { return nil }
+        let bytes = area * 4
+        if total > Int64.max - bytes { return nil }
+        total += bytes
+    }
+    guard total <= Int64(Int.max) else { return nil }
+    return Int(total)
 }
 
 public enum Wire {
