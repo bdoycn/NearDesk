@@ -31,6 +31,7 @@ public final class ViewerSession {
     private var eventID: UInt64 = 0
     private var stopped = false
     private var authed = false
+    private var videoTimeout: Task<Void, Never>?
 
     public init() {}
 
@@ -48,6 +49,8 @@ public final class ViewerSession {
 
     public func disconnect() {
         stopped = true
+        videoTimeout?.cancel()
+        videoTimeout = nil
         authed = false
         group?.cancel()
         group = nil
@@ -63,6 +66,7 @@ public final class ViewerSession {
     public func choose(displayID: UInt32) {
         guard let display = displays.first(where: { $0.displayID == displayID }), let control = controlPipe else { return }
         selected = display
+        waitForVideo()
         Task {
             try? await control.send(.selectDisplay(SelectDisplay(displayID: displayID)))
         }
@@ -130,15 +134,28 @@ public final class ViewerSession {
             try await input.writePreface(.input)
             inputPipe = input
             authed = true
+            waitForVideo()
             try await control.send(.selectDisplay(SelectDisplay(displayID: chosen.displayID)))
             onStatus?("Watching \(chosen.widthPx)×\(chosen.heightPx). Click the picture to control it.")
             while !stopped {
                 _ = try await control.next()
             }
         } catch {
+            videoTimeout?.cancel()
             if !stopped {
                 onStatus?("Disconnected. \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func waitForVideo() {
+        videoTimeout?.cancel()
+        videoTimeout = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 4_000_000_000)
+            } catch { return }
+            guard !Task.isCancelled, let self, !self.stopped else { return }
+            self.onStatus?("Host is not sending video (check Screen Recording). The host may need to fully quit and relaunch NearDesk.app after allowing it.")
         }
     }
 
@@ -180,6 +197,7 @@ public final class ViewerSession {
                 let received = MonoClock.nanoseconds()
                 switch message {
                 case .videoConfig(let config):
+                    videoTimeout?.cancel()
                     codedWidth = Int(config.codedWidth)
                     codedHeight = Int(config.codedHeight)
                     if let match = displays.first(where: { $0.displayID == config.displayID }) {
@@ -187,6 +205,7 @@ public final class ViewerSession {
                     }
                     try decoder.apply(config)
                 case .videoFrame(let frame):
+                    videoTimeout?.cancel()
                     guard frame.channelID != ChannelID.losslessTile else { continue }
                     guard let image = await decoder.decode(frame), let display = selected else { continue }
                     let presented = PresentedFrame(

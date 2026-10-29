@@ -30,6 +30,13 @@ final class HostController: ObservableObject {
         session.onStatus = { [weak self] text in
             Task { @MainActor in self?.status = text }
         }
+        session.onStartFailure = { [weak self] error in
+            Task { @MainActor in
+                self?.sharing = false
+                self?.port = 0
+                self?.status = "Could not start sharing: \(error.localizedDescription)"
+            }
+        }
         session.onPort = { [weak self] port in
             Task { @MainActor in self?.port = port }
         }
@@ -77,8 +84,14 @@ final class HostController: ObservableObject {
         if !accessibilityOK {
             status = "Accessibility is off. Keyboard and pointer injection will fail until it is allowed."
         }
-        sharing = true
-        session.start(name: name, password: password)
+        do {
+            try session.start(name: name, password: password)
+            sharing = true
+        } catch {
+            sharing = false
+            port = 0
+            status = "Could not start sharing: \(error.localizedDescription)"
+        }
     }
 }
 
@@ -141,6 +154,13 @@ final class ViewerController: ObservableObject {
                 self?.surface.hud = snapshot
             }
         }
+    }
+
+    private var browsing = false
+
+    func startBrowsing() {
+        guard !browsing else { return }
+        browsing = true
         browser.start()
     }
 
@@ -215,6 +235,9 @@ struct RootView: View {
             }
         }
         .frame(minWidth: 880, minHeight: 640)
+        .onChange(of: mode) { _, mode in
+            if mode == 1 { model.viewer.startBrowsing() }
+        }
         .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
             model.host.refresh()
         }
@@ -235,9 +258,12 @@ private struct HostPane: View {
                     .foregroundStyle(.secondary)
             }
             Section("Permissions") {
-                permissionRow("Screen Recording", ok: host.screenOK, action: host.allowScreen)
-                permissionRow("Accessibility", ok: host.accessibilityOK, action: host.allowAccessibility)
-                Text("Local Network is requested when sharing starts, so nearby Macs can see NearDesk.")
+                permissionRow("Screen Recording", ok: host.screenOK, settings: "Privacy_ScreenCapture", action: host.allowScreen)
+                permissionRow("Accessibility", ok: host.accessibilityOK, settings: "Privacy_Accessibility", action: host.allowAccessibility)
+                Text("After allowing Screen Recording or Accessibility, macOS often needs you to fully quit NearDesk.app (⌘Q) and relaunch it before the green check appears.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("Local Network is requested when sharing starts or you first select Viewer to find nearby Macs.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -260,7 +286,7 @@ private struct HostPane: View {
         .padding()
     }
 
-    private func permissionRow(_ title: String, ok: Bool, action: @escaping () -> Void) -> some View {
+    private func permissionRow(_ title: String, ok: Bool, settings: String, action: @escaping () -> Void) -> some View {
         HStack {
             Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(ok ? .green : .orange)
@@ -270,6 +296,11 @@ private struct HostPane: View {
                 Text("Allowed").foregroundStyle(.secondary)
             } else {
                 Button("Allow") { action() }
+                Button("Open Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(settings)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
             }
         }
     }

@@ -419,6 +419,7 @@ final class QuicGroup {
 final class QuicListener {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "neardesk.listen")
+    var onFailure: ((Error) -> Void)?
     var onReady: ((UInt16) -> Void)?
     var onState: ((String) -> Void)?
     var onGroup: ((QuicGroup) -> Void)?
@@ -439,6 +440,7 @@ final class QuicListener {
             )
         }
         listener.stateUpdateHandler = { [weak self] state in
+            guard self?.listener === listener else { return }
             switch state {
             case .ready:
                 let port = listener.port?.rawValue ?? 0
@@ -447,7 +449,7 @@ final class QuicListener {
             case .waiting(let error):
                 self?.onState?(describeNetwork(error))
             case .failed(let error):
-                self?.onState?(describeNetwork(error))
+                self?.onFailure?(error)
             case .cancelled:
                 self?.onState?("Sharing stopped")
             default:

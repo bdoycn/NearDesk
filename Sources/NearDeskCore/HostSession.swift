@@ -8,6 +8,7 @@ import Network
 
 public final class HostSession {
     public var onStatus: ((String) -> Void)?
+    public var onStartFailure: ((Error) -> Void)?
     public var onPort: ((UInt16) -> Void)?
     public var onStreaming: ((Bool) -> Void)?
 
@@ -34,7 +35,7 @@ public final class HostSession {
 
     public init() {}
 
-    public func start(name: String, password: String) {
+    public func start(name: String, password: String) throws {
         stop()
         stopped = false
         self.password = Data(password.utf8)
@@ -42,6 +43,10 @@ public final class HostSession {
         do {
             let identity = try SpikeIdentity.loadOrCreate()
             let clipped = String(data: UTF8Bytes.clipped(name, maxBytes: 63), encoding: .utf8) ?? "NearDesk"
+            listener.onFailure = { [weak self] error in
+                self?.stop()
+                self?.onStartFailure?(error)
+            }
             listener.onReady = { [weak self] port in
                 self?.onPort?(port)
             }
@@ -58,7 +63,8 @@ public final class HostSession {
             )
             onStatus?("Certificate \(SpikeIdentity.grouped(identity.fingerprintHex))")
         } catch {
-            onStatus?("Could not start sharing: \(error.localizedDescription)")
+            stop()
+            throw error
         }
     }
 
@@ -185,43 +191,58 @@ public final class HostSession {
                 onStatus?("That display is not available.")
                 continue
             }
-            try await beginVideo(display: display)
+            await beginVideo(display: display)
         }
     }
 
-    private func beginVideo(display: RemoteDisplay) async throws {
+    private func beginVideo(display: RemoteDisplay) async {
+        streaming = false
+        onStreaming?(false)
         capturer.stop()
         encoder.stop()
         videoPipe?.cancel()
+        videoPipe = nil
+        sendTail?.cancel()
+        sendTail = nil
         selected = display
         frameID = 0
         encodedCount = 0
         configID = 0
         lastParameterSets = nil
-        guard let group = activeGroup else { return }
-        let pipe = try group.openStream(.unidirectional)
-        try await pipe.writePreface(.video)
-        videoPipe = pipe
         if !PermissionProbe.screenRecording {
             onStatus?("Screen Recording is off. NearDesk is not sharing a desktop.")
             onStreaming?(false)
             return
         }
-        let size = codedSize(widthPx: display.widthPx, heightPx: display.heightPx)
-        codedWidth = size.width
-        codedHeight = size.height
-        try encoder.start(width: size.width, height: size.height)
-        capturer.onFrame = { [weak self] sample, captured in
-            self?.enqueue(sample, captured: captured)
+        do {
+            guard let group = activeGroup else { return }
+            let pipe = try group.openStream(.unidirectional)
+            try await pipe.writePreface(.video)
+            videoPipe = pipe
+            let size = codedSize(widthPx: display.widthPx, heightPx: display.heightPx)
+            codedWidth = size.width
+            codedHeight = size.height
+            try encoder.start(width: size.width, height: size.height)
+            capturer.onFrame = { [weak self] sample, captured in
+                self?.enqueue(sample, captured: captured)
+            }
+            capturer.onStopped = { [weak self] message in
+                self?.onStatus?("Capture stopped. \(message)")
+                self?.onStreaming?(false)
+            }
+            _ = try await capturer.start(displayID: display.displayID)
+            streaming = true
+            onStreaming?(true)
+            onStatus?("Sharing \(size.width)×\(size.height) \(encoder.hevc ? "HEVC" : "H.264").")
+        } catch {
+            streaming = false
+            capturer.stop()
+            encoder.stop()
+            videoPipe?.cancel()
+            videoPipe = nil
+            onStreaming?(false)
+            onStatus?("Could not start video: \(error.localizedDescription). Check Screen Recording, fully quit and relaunch NearDesk.app if needed, then re-select a display.")
         }
-        capturer.onStopped = { [weak self] message in
-            self?.onStatus?("Capture stopped. \(message)")
-            self?.onStreaming?(false)
-        }
-        _ = try await capturer.start(displayID: display.displayID)
-        streaming = true
-        onStreaming?(true)
-        onStatus?("Sharing \(size.width)×\(size.height) \(encoder.hevc ? "HEVC" : "H.264").")
     }
 
     private func enqueue(_ sample: CMSampleBuffer, captured: UInt64) {
