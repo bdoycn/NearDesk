@@ -37,7 +37,7 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         configuration.width = size.width
         configuration.height = size.height
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.showsCursor = true
         configuration.capturesAudio = false
         configuration.queueDepth = 3
