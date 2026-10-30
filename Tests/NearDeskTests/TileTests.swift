@@ -15,8 +15,9 @@ final class TileRoutingTests: XCTestCase {
     func testDocExamples() {
         XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 3, height: 28)), .tile)
         XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 640, height: 32)), .tile)
-        XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 1728, height: 75)), .tile)
-        XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 1728, height: 76)), .lossy)
+        XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 1024, height: 32)), .tile)
+        XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 1024, height: 33)), .lossy)
+        XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 1728, height: 75)), .lossy)
         XCTAssertEqual(route(NdRect(x: 0, y: 0, width: 800, height: 600)), .lossy)
         XCTAssertEqual(route(NdRect(x: -1, y: 0, width: 10, height: 10)), .lossy)
         XCTAssertEqual(route(NdRect(x: 1720, y: 0, width: 20, height: 10)), .lossy)
@@ -31,16 +32,50 @@ final class TileRoutingTests: XCTestCase {
         XCTAssertEqual(plan?.sendsLossy, false)
     }
 
-    func testByteBudgetOverflowsTheRest() {
+    func testCaptureAreaSendsTheWholeBatchLossy() {
+        let pair = steady(DirtyEncode(rects: [
+            NdRect(x: 0, y: 0, width: 110, height: 100),
+            NdRect(x: 0, y: 100, width: 110, height: 100),
+        ], flags: 0))
+        XCTAssertEqual(pair?.sendsTile, false)
+        XCTAssertEqual(pair?.sendsLossy, true)
+        XCTAssertEqual(pair?.lossyRects.count, 2)
+
+        var typing: [NdRect] = []
+        for index in 0..<8 {
+            typing.append(NdRect(x: Int32(index * 100), y: 0, width: 90, height: 90))
+        }
+        let measured = steady(DirtyEncode(rects: typing, flags: 0))
+        XCTAssertEqual(measured?.sendsTile, false)
+        XCTAssertEqual(measured?.sendsLossy, true)
+        XCTAssertEqual(measured?.tileRects.count, 0)
+        XCTAssertEqual(measured?.lossyRects.count, 8)
+        let pixels = typing.reduce(0) { $0 + Int($1.width) * Int($1.height) }
+        XCTAssertGreaterThan(pixels, Int(TileBudget.captureAreaMax))
+        XCTAssertEqual(pixels * 4, 259_200)
+    }
+
+    func testCaretBesideLargeMotionStaysATile() {
+        let plan = steady(DirtyEncode(rects: [
+            NdRect(x: 0, y: 0, width: 3, height: 28),
+            NdRect(x: 0, y: 40, width: 800, height: 600),
+        ], flags: 0))
+        XCTAssertEqual(plan?.tileRects, [NdRect(x: 0, y: 0, width: 3, height: 28)])
+        XCTAssertEqual(plan?.lossyRects.count, 1)
+        XCTAssertEqual(plan?.sendsTile, true)
+        XCTAssertEqual(plan?.sendsLossy, true)
+    }
+
+    func testModestClusterStaysTiles() {
         var rects: [NdRect] = []
-        for index in 0..<6 {
-            rects.append(NdRect(x: 0, y: Int32(index * 128), width: 256, height: 128))
+        for index in 0..<4 {
+            rects.append(NdRect(x: Int32(index * 40), y: 0, width: 40, height: 40))
         }
         let plan = steady(DirtyEncode(rects: rects, flags: 0))
         XCTAssertEqual(plan?.tileRects.count, 4)
-        XCTAssertEqual(plan?.lossyRects.count, 2)
-        XCTAssertEqual(plan?.lossyRects.map(\.y), [512, 640])
-        XCTAssertEqual(plan?.sendsLossy, true)
+        XCTAssertEqual(plan?.sendsLossy, false)
+        let pixels = rects.reduce(0) { $0 + Int($1.width) * Int($1.height) }
+        XCTAssertLessThanOrEqual(pixels, Int(TileBudget.captureAreaMax))
     }
 
     func testCountOverflowsTheRest() {
