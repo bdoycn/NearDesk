@@ -67,18 +67,25 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
 }
 
 func dirtyEncode(from sampleBuffer: CMSampleBuffer) -> DirtyEncode {
-    guard let attachment = CMGetAttachment(
+    encodeDirtyRectsAttachment(sampleBufferDirtyRectsValue(sampleBuffer))
+}
+
+/// Prefer sample-attachments dictionary; `CMGetAttachment` is nil on some macOS builds.
+func sampleBufferDirtyRectsValue(_ sampleBuffer: CMSampleBuffer) -> Any? {
+    let key = SCStreamFrameInfo.dirtyRects.rawValue
+    if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [Any] {
+        for entry in attachments {
+            if let dict = entry as? [AnyHashable: Any], let value = dict[key] {
+                return value
+            }
+            if let dict = entry as? NSDictionary, let value = dict[key] {
+                return value
+            }
+        }
+    }
+    return CMGetAttachment(
         sampleBuffer,
         key: SCStreamFrameInfo.dirtyRects as CFString,
         attachmentModeOut: nil
-    ) else {
-        return encodeDirtyRects(nil, hadMetadata: false)
-    }
-    if let values = attachment as? [NSValue] {
-        return encodeDirtyRects(values.map(\.rectValue), hadMetadata: true)
-    }
-    if let values = attachment as? [CGRect] {
-        return encodeDirtyRects(values, hadMetadata: true)
-    }
-    return encodeDirtyRects(nil, hadMetadata: true)
+    )
 }

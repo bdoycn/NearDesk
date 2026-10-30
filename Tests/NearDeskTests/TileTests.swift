@@ -1,7 +1,10 @@
 // Copyright 2026 NearDesk Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import AppKit
+import CoreGraphics
 import CoreVideo
+import Foundation
 import XCTest
 @testable import NearDeskCore
 
@@ -179,6 +182,80 @@ final class TileRoutingTests: XCTestCase {
         case lossy
         case both
         case none
+    }
+}
+
+
+final class DirtyRectsAttachmentTests: XCTestCase {
+    func testMissingAttachmentIsDirtyNone() {
+        let parsed = parseDirtyRectsAttachment(nil)
+        XCTAssertFalse(parsed.hadMetadata)
+        XCTAssertNil(parsed.rects)
+        let packed = encodeDirtyRectsAttachment(nil)
+        XCTAssertEqual(packed.flags, FrameFlag.dirtyNone)
+        XCTAssertTrue(packed.rects.isEmpty)
+    }
+
+    func testNSValueArray() {
+        let values = [
+            NSValue(rect: CGRect(x: 1, y: 2, width: 3, height: 4)),
+            NSValue(rect: CGRect(x: 10, y: 20, width: 5, height: 6)),
+        ]
+        let parsed = parseDirtyRectsAttachment(values)
+        XCTAssertTrue(parsed.hadMetadata)
+        XCTAssertEqual(parsed.rects?.count, 2)
+        XCTAssertEqual(parsed.rects?[0], CGRect(x: 1, y: 2, width: 3, height: 4))
+        XCTAssertEqual(parsed.rects?[1], CGRect(x: 10, y: 20, width: 5, height: 6))
+    }
+
+    func testCGRectArray() {
+        let rects = [CGRect(x: 0, y: 0, width: 8, height: 9)]
+        let parsed = parseDirtyRectsAttachment(rects)
+        XCTAssertTrue(parsed.hadMetadata)
+        XCTAssertEqual(parsed.rects, rects)
+    }
+
+    func testDictionaryShapedRectsNeoStyle() {
+        let payload: [[String: NSNumber]] = [
+            ["X": 12, "Y": 34, "Width": 56, "Height": 78],
+            ["X": 0, "Y": 1, "Width": 2, "Height": 3],
+        ]
+        let parsed = parseDirtyRectsAttachment(payload)
+        XCTAssertTrue(parsed.hadMetadata)
+        XCTAssertEqual(parsed.rects?.count, 2)
+        XCTAssertEqual(parsed.rects?[0], CGRect(x: 12, y: 34, width: 56, height: 78))
+        XCTAssertEqual(parsed.rects?[1], CGRect(x: 0, y: 1, width: 2, height: 3))
+        let packed = encodeDirtyRectsAttachment(payload)
+        XCTAssertEqual(packed.flags, 0)
+        XCTAssertEqual(packed.rects.count, 2)
+        XCTAssertEqual(packed.rects[0], NdRect(x: 12, y: 34, width: 56, height: 78))
+    }
+
+    func testEmptyPresentArrayIsNotDirtyNone() {
+        let parsed = parseDirtyRectsAttachment([Any]())
+        XCTAssertTrue(parsed.hadMetadata)
+        XCTAssertEqual(parsed.rects?.isEmpty, true)
+        let packed = encodeDirtyRectsAttachment([Any]())
+        XCTAssertEqual(packed.flags, 0)
+        XCTAssertTrue(packed.rects.isEmpty)
+    }
+
+    func testUnrecognizedShapeKeepsMetadata() {
+        let parsed = parseDirtyRectsAttachment("not-rects")
+        XCTAssertTrue(parsed.hadMetadata)
+        XCTAssertNil(parsed.rects)
+        let packed = encodeDirtyRectsAttachment("not-rects")
+        XCTAssertEqual(packed.flags, 0)
+        XCTAssertTrue(packed.rects.isEmpty)
+    }
+
+    func testNSArrayOfDictionaries() {
+        let array: NSArray = [
+            ["X": 4, "Y": 5, "Width": 6, "Height": 7] as NSDictionary,
+        ]
+        let parsed = parseDirtyRectsAttachment(array)
+        XCTAssertTrue(parsed.hadMetadata)
+        XCTAssertEqual(parsed.rects?.first, CGRect(x: 4, y: 5, width: 6, height: 7))
     }
 }
 

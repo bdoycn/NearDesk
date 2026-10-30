@@ -1,6 +1,7 @@
 // Copyright 2026 NearDesk Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -35,6 +36,102 @@ public func encodeDirtyRects(_ input: [CGRect]?, hadMetadata: Bool) -> DirtyEnco
         return DirtyEncode(rects: [boundingBox(rects)], flags: FrameFlag.dirtyCoalesced)
     }
     return DirtyEncode(rects: rects, flags: 0)
+}
+
+
+/// Result of reading an SCStreamFrameInfo.dirtyRects attachment payload.
+public struct DirtyRectsParse: Equatable {
+    public var rects: [CGRect]?
+    public var hadMetadata: Bool
+
+    public init(rects: [CGRect]?, hadMetadata: Bool) {
+        self.rects = rects
+        self.hadMetadata = hadMetadata
+    }
+}
+
+/// Parse the dirty-rects attachment value without requiring a live CMSampleBuffer.
+/// `hadMetadata` is false only when the value is truly missing (`nil`).
+public func parseDirtyRectsAttachment(_ value: Any?) -> DirtyRectsParse {
+    guard let value else {
+        return DirtyRectsParse(rects: nil, hadMetadata: false)
+    }
+    if let values = value as? [NSValue] {
+        return DirtyRectsParse(rects: values.map(\.rectValue), hadMetadata: true)
+    }
+    if let values = value as? [CGRect] {
+        return DirtyRectsParse(rects: values, hadMetadata: true)
+    }
+    if let rects = dirtyRectsFromDictionaryPayload(value) {
+        return DirtyRectsParse(rects: rects, hadMetadata: true)
+    }
+    // Key was present but the shape is unrecognized — not DIRTY_NONE.
+    return DirtyRectsParse(rects: nil, hadMetadata: true)
+}
+
+public func encodeDirtyRectsAttachment(_ value: Any?) -> DirtyEncode {
+    let parsed = parseDirtyRectsAttachment(value)
+    return encodeDirtyRects(parsed.rects, hadMetadata: parsed.hadMetadata)
+}
+
+func dirtyRectsFromDictionaryPayload(_ value: Any) -> [CGRect]? {
+    if let dict = value as? [AnyHashable: Any], let rect = cgRectFromDirtyDict(dict) {
+        return [rect]
+    }
+    guard let array = value as? NSArray else {
+        return nil
+    }
+    if array.count == 0 {
+        return []
+    }
+    var rects: [CGRect] = []
+    for index in 0..<array.count {
+        let item = array[index]
+        if let ns = item as? NSValue {
+            rects.append(ns.rectValue)
+            continue
+        }
+        if let dict = item as? [AnyHashable: Any], let rect = cgRectFromDirtyDict(dict) {
+            rects.append(rect)
+            continue
+        }
+        if let dict = item as? NSDictionary {
+            var bridged: [AnyHashable: Any] = [:]
+            dict.enumerateKeysAndObjects { key, raw, _ in
+                if let hashable = key as? AnyHashable {
+                    bridged[hashable] = raw
+                }
+            }
+            if let rect = cgRectFromDirtyDict(bridged) {
+                rects.append(rect)
+            }
+        }
+    }
+    return rects.isEmpty ? nil : rects
+}
+
+func cgRectFromDirtyDict(_ dict: [AnyHashable: Any]) -> CGRect? {
+    func number(_ keys: [String]) -> CGFloat? {
+        for key in keys {
+            if let n = dict[key] as? NSNumber {
+                return CGFloat(truncating: n)
+            }
+            if let n = dict[key] as? Double {
+                return CGFloat(n)
+            }
+            if let n = dict[key] as? Int {
+                return CGFloat(n)
+            }
+        }
+        return nil
+    }
+    guard let x = number(["X", "x"]),
+          let y = number(["Y", "y"]),
+          let width = number(["Width", "width", "W", "w"]),
+          let height = number(["Height", "height", "H", "h"]) else {
+        return nil
+    }
+    return CGRect(x: x, y: y, width: width, height: height)
 }
 
 public struct CapturePlan: Equatable {
