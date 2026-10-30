@@ -42,7 +42,7 @@ The measured picture is aspect-fit inside 1920×1080 at 60 fps, 4:2:0. Compare t
 | Host | Accessibility | Key and pointer injection fails and the status says so |
 | Host and Viewer | Local Network | Discovery or the connection fails with a Local Network message |
 
-The packaged app’s bundle id is `dev.neardesk.spike`. Ad-hoc signing changes every rebuild, so macOS may ask again. Allow NearDesk in System Settings → Privacy & Security.
+The packaged app’s bundle id is `dev.neardesk.spike`. `Scripts/package-app.sh` signs with a stable local identity (`NearDesk Spike Dev`) so Screen Recording / Accessibility grants survive rebuilds. First time on a Mac: run `Scripts/ensure-codesign-identity.sh` (package-app runs it if missing), then Allow NearDesk once in System Settings → Privacy & Security. You still have to click Allow the first time—macOS will not grant those privately—but you should not need to remove and re-add the app after every compile. If Keychain shows the cert as untrusted for Code Signing, set Trust → Code Signing → Always Trust, then re-run the ensure script.
 
 ### Latency
 
