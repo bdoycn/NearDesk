@@ -338,8 +338,7 @@ public final class HostSession {
             queueTile(job)
         }
         guard job.sendsLossy else {
-            busy = false
-            kick()
+            releaseAfterSend(job.generation)
             return
         }
         guard let yuv = transfer.toFullRange420(next.buffer, width: codedWidth, height: codedHeight) else {
@@ -349,8 +348,7 @@ public final class HostSession {
             if !job.tileQueued {
                 onStatus?("Encoder failed. Video paused.")
             }
-            busy = false
-            kick()
+            releaseAfterSend(job.generation)
             return
         }
         let forceKey = job.lossyFlags & FrameFlag.keyframe != 0
@@ -364,9 +362,10 @@ public final class HostSession {
 
     private func finishEncode(_ result: Result<EncodedAccessUnit, Error>, job: InflightCapture) {
         guard job.generation == videoGeneration else { return }
-        busy = false
-        defer { if streaming, videoGeneration == job.generation { kick() } }
-        guard streaming, videoPipe != nil else { return }
+        guard streaming, videoPipe != nil else {
+            busy = false
+            return
+        }
         switch result {
         case .failure:
             if !job.tileQueued {
@@ -375,16 +374,21 @@ public final class HostSession {
             if !job.tileQueued {
                 onStatus?("Encoder failed. Video paused.")
             }
+            releaseAfterSend(job.generation)
         case .success(let encoded):
             let offer = makeLossyConfig(encoded, job: job)
             if case .blocked = offer {
                 if !job.tileQueued {
                     queueTile(job)
                 }
+                releaseAfterSend(job.generation)
                 return
             }
             let id = takeFrameID(job)
-            guard lossyConfigID != 0 else { return }
+            guard lossyConfigID != 0 else {
+                releaseAfterSend(job.generation)
+                return
+            }
             var messages: [NearMessage] = []
             if case .ready(let config) = offer {
                 messages.append(config)
@@ -420,7 +424,27 @@ public final class HostSession {
                 hasLossyKeyframe = true
             }
             publishedGeometry = job.geometry
+            releaseAfterSend(job.generation)
         }
+    }
+
+    /// `busy` stays set until this capture's bytes are accepted. A later capture
+    /// replaces `pending`, so a stalled send cannot queue minutes of frames.
+    private func releaseAfterSend(_ generation: Int) {
+        let previous = sendTail
+        let hop = PumpHop(self)
+        sendTail = Task {
+            _ = await previous?.value
+            hop.session?.pumpQueue.async {
+                hop.session?.completeRelease(generation)
+            }
+        }
+    }
+
+    private func completeRelease(_ generation: Int) {
+        guard generation == videoGeneration else { return }
+        busy = false
+        if streaming { kick() }
     }
 
     private func queueTile(_ job: InflightCapture) {
@@ -549,6 +573,11 @@ public final class HostSession {
             }
         }
     }
+}
+
+private final class PumpHop: @unchecked Sendable {
+    weak var session: HostSession?
+    init(_ session: HostSession) { self.session = session }
 }
 
 private struct PendingCapture {

@@ -210,12 +210,21 @@ private func splitTiles(_ packed: DirtyEncode, codedWidth: Int, codedHeight: Int
     }
     var candidates: [NdRect] = []
     var lossyRects: [NdRect] = []
+    var candidateArea: Int64 = 0
     for rect in packed.rects {
         if isSmallTile(rect, codedWidth: codedWidth, codedHeight: codedHeight) {
             candidates.append(rect)
+            candidateArea += Int64(rect.width) * Int64(rect.height)
         } else {
             lossyRects.append(rect)
         }
+    }
+    // One caret-sized rect stays a tile. Several rects that add up past a text
+    // line are one motion batch: tiling any of them keeps channel 3 and ships
+    // the BGRA alongside HEVC. Send the whole capture lossy instead.
+    if candidates.count > 1, candidateArea > TileBudget.captureAreaMax {
+        lossyRects.append(contentsOf: candidates)
+        candidates.removeAll()
     }
     let (admitted, overflow) = admitTiles(candidates)
     lossyRects.append(contentsOf: overflow)

@@ -59,7 +59,9 @@ enum QuicParameters {
         options.initialMaxData = 32 * 1024 * 1024
         options.initialMaxStreamDataBidirectionalLocal = 8 * 1024 * 1024
         options.initialMaxStreamDataBidirectionalRemote = 8 * 1024 * 1024
-        options.initialMaxStreamDataUnidirectional = 8 * 1024 * 1024
+        // Video and input are unidirectional. 8 MiB let the sender run minutes
+        // ahead of a viewer that is still presenting earlier frames.
+        options.initialMaxStreamDataUnidirectional = 512 * 1024
         options.idleTimeout = 60_000
         let security = options.securityProtocolOptions
         sec_protocol_options_set_local_identity(security, identity)
@@ -174,10 +176,9 @@ final class BytePipe: @unchecked Sendable {
             let notify = onReady
             onReady = nil
             notify?()
-            if receives && !reading {
-                reading = true
-                pumpRead()
-            }
+            // Pull. An eager receive copies the QUIC window into an unbounded
+            // buffer, so T3 is "the viewer finally reached this frame".
+            pumpRead()
         case .failed(let error):
             fail(TransportError.failed(error))
         case .cancelled:
@@ -188,10 +189,14 @@ final class BytePipe: @unchecked Sendable {
     }
 
     private func pumpRead() {
-        guard failed == nil, !eof else { return }
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024 * 1024) { [weak self] data, _, isComplete, error in
+        guard receives, failed == nil, !eof, !reading else { return }
+        guard pending != nil, buffer.count - offset == 0 else { return }
+        reading = true
+        let maxLength = max(pending?.0 ?? 1, 1)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: maxLength) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             self.queue.async {
+                self.reading = false
                 if let data, !data.isEmpty {
                     self.buffer.append(data)
                 }
@@ -205,7 +210,9 @@ final class BytePipe: @unchecked Sendable {
                     return
                 }
                 self.satisfy()
-                self.pumpRead()
+                if self.pending != nil, self.buffer.count - self.offset == 0, !self.eof {
+                    self.pumpRead()
+                }
             }
         }
     }
@@ -226,7 +233,9 @@ final class BytePipe: @unchecked Sendable {
         if eof || failed != nil {
             self.pending = nil
             pending.1.resume(throwing: failed ?? TransportError.closed)
+            return
         }
+        pumpRead()
     }
 
     private func compact() {

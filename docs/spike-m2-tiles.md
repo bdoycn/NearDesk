@@ -37,13 +37,16 @@ M1 的成功条件、QUIC preface 和输入路径仍以 [spike-protocol.md](spik
 
 | 符号 | 值 | 含义 |
 | --- | --- | --- |
-| `TILE_AREA_MAX` | `131072` | 单个矩形的 `width * height` 上限，含等号。1728×75 或 256×512 仍算小；再大走有损 |
+| `TILE_AREA_MAX` | `32768` | 单个矩形的 `width * height` 上限，含等号。640×32 或 1024×32 仍算小；1728×75 走有损 |
+| `TILE_CAPTURE_AREA_MAX` | `20480` | 同一采集里**两个及以上** small 矩形的面积之和，含等号。超过则这批一个瓦片都不发，整采集走有损。20480 是一行 640×32 |
 | `TILE_EDGE_MAX` | `2048` | 宽或高超过则走有损。当前 coded 边长 ≤ 1920，这条是防 coded 尺寸变大 |
 | `TILE_MAX_COUNT` | `8` | 一条瓦片消息里最多几个矩形 |
-| `TILE_BYTES_MAX` | `524288` | 一条瓦片消息里像素字节之和的上限。等于 `TILE_AREA_MAX * 4` |
+| `TILE_BYTES_MAX` | `131072` | 一条瓦片消息里像素字节之和的上限。等于 `TILE_AREA_MAX * 4` |
 | 有损关键帧间隔 | `120` | 只数真正发出的有损帧，沿用 M1 的 `encodedCount % 120` |
 
-这五个数不是产品已钉。打字 p95 被原始像素撑破、或 TextEdit 一行被划进 HEVC 导致发糊，Cocoa 可以改表，改完把新数字写回本文。单矩形 BGRA 字节数是 `width * height * 4`，用 64 位整数相乘。
+这六个数不是产品已钉。打字 p95 被原始像素撑破、或 TextEdit 一行被划进 HEVC 导致发糊，Cocoa 可以改表，改完把新数字写回本文。单矩形 BGRA 字节数是 `width * height * 4`，用 64 位整数相乘。
+
+`TILE_AREA_MAX` 从 `131072` 收到 `32768`，并加上 `TILE_CAPTURE_AREA_MAX`。同机 loopback 上，打字样本的瓦片 `au_bytes` 到过 255784（8 个矩形、共 63946 像素）：每一块都过得了旧的 `small()`，于是整帧记在通道 3，BGRA 把玻璃到玻璃堆到秒级。一块插入符或一行字仍走瓦片；多块矩形加起来超过一行，就整批改走 HEVC/H.264。
 
 `TILE_BYTES_MAX` 必须让整条消息落在现有 `maxBodyLength`（8 MiB）以内。本表满足。不要把一条瓦片拆成多条 `VIDEO_FRAME`。
 
@@ -70,6 +73,9 @@ else:
     for rect in packed.rects:
         if small(rect): candidates.append(rect)
         else: lossyRects.append(rect)
+    if candidates 多于 1 个，且面积之和 > TILE_CAPTURE_AREA_MAX:
+        lossyRects += candidates
+        candidates = []          # 整批有损，不留任何瓦片
     tileRects, overflow = admit(candidates)
     lossyRects += overflow
     if lossyRects 为空:
@@ -91,6 +97,8 @@ admit(candidates):
         used += need
     return admitted, overflow
 ```
+
+只有一个 small 矩形时，看 `TILE_AREA_MAX`，不看捕获面积和。两个及以上时，面积之和一旦超过 `TILE_CAPTURE_AREA_MAX`，候选全部改走有损，不要留前几块当瓦片、其余再送一帧 HEVC。那种混发会把延迟记在通道 3 上，Viewer 还要再解一帧整图。
 
 候选已按面积升序。当前矩形因字节预算放不进时，后面的不会更小，一并改走有损。因 `TILE_MAX_COUNT` 放不进时，后面的也一并改走有损，不再挑较小的补位（排序已经把小的放在前面）。
 
@@ -114,9 +122,12 @@ admit(candidates):
 | 脏区 | 面积 | 去向 |
 | --- | --- | --- |
 | 插入符 3×28 | 84 | `lossless_tile`，336 字节 |
-| 一行字 640×32 | 20480 | `lossless_tile` |
-| 通栏一行 1728×75 | 129600 | `lossless_tile` |
-| 通栏再高 1 像素 1728×76 | 131328 | 有损整帧 |
+| 一行字 640×32 | 20480 | `lossless_tile`。只有一块时不看捕获面积和 |
+| 单块 1024×32 | 32768 | `lossless_tile` |
+| 单块再大 1024×33 | 33792 | 有损整帧 |
+| 通栏一行 1728×75 | 129600 | 有损整帧 |
+| 两块 110×100 | 22000 | 有损整帧。每块都 `small()`，和超过 `TILE_CAPTURE_AREA_MAX` |
+| 八块约 90×90 | 64800 | 有损整帧。同机打字样本是 8 个矩形、共 63946 像素（255784 字节），同样整批有损 |
 | 拖窗口 800×600 | 480000 | 有损整帧 |
 | SCK 给出 70 个矩形 | 先收成 1 个盒子 | 再按盒子面积二选一 |
 | `DIRTY_NONE` | — | 只发有损，不发瓦片。这帧换掉 base，并清掉更旧的瓦片 |

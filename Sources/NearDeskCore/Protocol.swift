@@ -55,10 +55,13 @@ public enum CodecID {
 
 /// Draft thresholds from docs/spike-m2-tiles.md. Area is in capture-buffer pixels.
 public enum TileBudget {
-    public static let areaMax: Int64 = 131_072
+    /// One rectangle. A 640×32 line (20480) still tiles; 1728×75 does not.
+    public static let areaMax: Int64 = 32_768
+    /// Sum of two or more small rectangles. Over this, the capture is entirely lossy.
+    public static let captureAreaMax: Int64 = 20_480
     public static let edgeMax: Int32 = 2_048
     public static let maxCount = 8
-    public static let bytesMax = 524_288
+    public static let bytesMax = 131_072
     public static let lossyKeyframeInterval: UInt64 = 120
 }
 
